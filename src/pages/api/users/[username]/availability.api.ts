@@ -1,6 +1,9 @@
 import dayjs from 'dayjs'
+import utc from 'dayjs/plugin/utc'
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { prisma } from '@/lib/prisma'
+
+dayjs.extend(utc)
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
@@ -19,10 +22,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ message: 'User does not exist.' })
   }
 
-  const { date } = req.query
+  const { date, timezoneOffset } = req.query
 
-  if (!date) {
-    return res.status(400).json({ message: 'Date not provided.' })
+  if (!date || !timezoneOffset) {
+    return res.status(400).json({ message: 'Date or Timezone Offset not provided.' })
   }
 
   const referenceDate = dayjs(String(date))
@@ -32,6 +35,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (isPastDate) {
     return res.json({ possibleTimes: [], availableTimes: [] })
   }
+
+  const timezoneOffsetInHours =
+    typeof timezoneOffset === 'string'
+      ? Number(timezoneOffset) / 60
+      : Number(timezoneOffset[0]) / 60
+
+  const referenceDateTimezoneOffsetInHours = referenceDate.toDate().getTimezoneOffset() / 60
 
   const userAvailability = await prisma.userTimeInterval.findFirst({
     where: {
@@ -61,16 +71,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     where: {
       user_id: user.id,
       date: {
-        gte: referenceDate.set('hour', startHour).toDate(),
-        lte: referenceDate.set('hour', endHour).toDate(),
+        gte: referenceDate.set('hour', startHour).add(timezoneOffsetInHours, 'hour').toDate(),
+        lte: referenceDate.set('hour', endHour).add(timezoneOffsetInHours, 'hour').toDate(),
       },
     },
   })
 
   const availableTimes = possibleTimes.filter((time) => {
-    const isTimeBlocked = blockedTimes.some((blockedTime) => blockedTime.date.getHours() === time)
+    const isTimeBlocked = blockedTimes.some(
+      (blockedTime) => blockedTime.date.getUTCHours() - timezoneOffsetInHours === time,
+    )
 
-    const isTimeInPast = referenceDate.set('hour', time).isBefore(new Date())
+    const isTimeInPast = referenceDate
+      .set('hour', time)
+      .subtract(referenceDateTimezoneOffsetInHours, 'hours')
+      .isBefore(new Date())
 
     return !isTimeBlocked && !isTimeInPast
   })
